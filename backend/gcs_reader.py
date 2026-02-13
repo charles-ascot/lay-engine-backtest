@@ -146,40 +146,62 @@ class DataReader:
         return entries
 
     # ── Google Cloud Storage ──
+    #
+    # Bucket hierarchy:
+    #   betfair-live/7/{YYYY-MM-DD}/books/{HH-MM-SS}.ndjson
+    #   betfair-live/7/{YYYY-MM-DD}/catalogue/{HH-MM-SS}.ndjson
+
+    GCS_PREFIX = "betfair-live/7/"
 
     def _list_dates_gcs(self) -> list[str]:
-        dates = set()
         bucket = self.gcs_client.bucket(self.bucket_name)
-        blobs = bucket.list_blobs(prefix="betfair-live_7_")
-        for blob in blobs:
-            parsed = parse_filename(blob.name)
-            if parsed:
-                dates.add(parsed[0])
+        # Use delimiter to list "folder" prefixes under betfair-live/7/
+        iterator = bucket.list_blobs(prefix=self.GCS_PREFIX, delimiter="/")
+        # Must consume the iterator for prefixes to populate
+        _ = list(iterator)
+        dates = set()
+        for prefix in iterator.prefixes:
+            # prefix looks like "betfair-live/7/2026-02-13/"
+            parts = prefix.rstrip("/").split("/")
+            date_str = parts[-1]  # "2026-02-13"
+            if re.match(r"\d{4}-\d{2}-\d{2}$", date_str):
+                dates.add(date_str)
         return list(dates)
 
     def _list_snapshots_gcs(self, date: str) -> list[SnapshotPair]:
         bucket = self.gcs_client.bucket(self.bucket_name)
-        prefix = f"betfair-live_7_{date}_"
-        blobs = bucket.list_blobs(prefix=prefix)
+        ts_pattern = re.compile(r"(\d{2}-\d{2}-\d{2})\.ndjson$")
 
-        groups: dict[str, dict[str, str]] = {}
-        for blob in blobs:
-            parsed = parse_filename(blob.name)
-            if parsed and parsed[0] == date:
-                _, data_type, file_time = parsed
-                if file_time not in groups:
-                    groups[file_time] = {}
-                groups[file_time][data_type] = blob.name
+        # List books files
+        books_prefix = f"{self.GCS_PREFIX}{date}/books/"
+        books_by_ts: dict[str, str] = {}
+        for blob in bucket.list_blobs(prefix=books_prefix):
+            fname = blob.name.rsplit("/", 1)[-1]
+            m = ts_pattern.match(fname)
+            if m:
+                books_by_ts[m.group(1)] = blob.name
 
+        # List catalogue files
+        cat_prefix = f"{self.GCS_PREFIX}{date}/catalogue/"
+        cat_by_ts: dict[str, str] = {}
+        for blob in bucket.list_blobs(prefix=cat_prefix):
+            fname = blob.name.rsplit("/", 1)[-1]
+            m = ts_pattern.match(fname)
+            if m:
+                cat_by_ts[m.group(1)] = blob.name
+
+        # Pair by matching timestamp
+        all_timestamps = sorted(set(books_by_ts.keys()) & set(cat_by_ts.keys()))
         pairs = []
-        for ts, files in sorted(groups.items()):
-            if "books" in files and "catalogue" in files:
-                pairs.append(SnapshotPair(
-                    date=date,
-                    timestamp=ts,
-                    books_path=files["books"],
-                    catalogue_path=files["catalogue"],
-                ))
+        for ts in all_timestamps:
+            pairs.append(SnapshotPair(
+                date=date,
+                timestamp=ts,
+                books_path=books_by_ts[ts],
+                catalogue_path=cat_by_ts[ts],
+            ))
+
+        logger.info(f"Date {date}: {len(books_by_ts)} books, {len(cat_by_ts)} catalogues, {len(pairs)} paired snapshots")
         return pairs
 
     def _read_gcs(self, blob_name: str) -> list[dict]:

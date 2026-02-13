@@ -1,0 +1,363 @@
+/* ── CHIMERA Back-Test Workbench ── */
+:root {
+  --bg: #0f1117;
+  --surface: #1a1d27;
+  --border: #2a2d3a;
+  --text: #e4e4e7;
+  --muted: #71717a;
+  --primary: #3b82f6;
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --danger: #ef4444;
+  --accent: #8b5cf6;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', monospace;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* ── Layout ── */
+.app { max-width: 1600px; margin: 0 auto; padding: 16px; }
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.header-left { display: flex; align-items: center; gap: 12px; }
+.header-left h1 { font-size: 20px; }
+.header-right { display: flex; align-items: center; gap: 16px; }
+
+/* ── Top Bar (Data Browser + Race Selector) ── */
+.top-bar {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.date-picker { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.date-picker label { color: var(--muted); font-size: 12px; text-transform: uppercase; }
+.date-picker select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 6px 10px;
+  font-family: inherit;
+  font-size: 13px;
+}
+
+/* ── Main Grid ── */
+.main-grid {
+  display: grid;
+  grid-template-columns: 2fr 3fr;
+  gap: 16px;
+  align-items: start;
+}
+
+/* ── Panels ── */
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+}
+.panel h2 {
+  font-size: 14px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 12px;
+}
+
+/* ── Race Selector ── */
+.race-list { flex: 1; overflow-x: auto; }
+.venue-group { margin-bottom: 8px; }
+.venue-name {
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.race-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 13px;
+}
+.race-item input[type="checkbox"] { accent-color: var(--primary); }
+.race-time { color: var(--muted); min-width: 40px; }
+.race-name { flex: 1; }
+.race-runners { color: var(--muted); font-size: 11px; }
+.race-controls {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  flex-shrink: 0;
+}
+
+/* ── Buttons ── */
+.btn {
+  padding: 8px 18px;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  color: #fff;
+}
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-primary { background: var(--primary); }
+.btn-danger { background: var(--danger); }
+.btn-success { background: var(--success); color: #000; }
+.btn-warning { background: var(--warning); color: #000; }
+.btn-sm {
+  padding: 4px 12px;
+  font-size: 12px;
+  background: var(--border);
+  border: none;
+  border-radius: 4px;
+  color: var(--text);
+  cursor: pointer;
+}
+.btn-sm:hover { background: #3a3d4a; }
+.btn-icon {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.btn-icon:hover { background: var(--border); color: var(--danger); }
+
+/* ── Strategy Editor ── */
+.strategy-header {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+  align-items: center;
+}
+.strategy-header input {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 6px 10px;
+  font-family: inherit;
+  font-size: 13px;
+}
+.strategy-header input:focus { outline: none; border-color: var(--primary); }
+
+.strategy-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.rule-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+  margin-bottom: 8px;
+}
+.rule-header {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.rule-header input[type="text"] {
+  flex: 1;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 4px 6px;
+}
+.rule-header input[type="text"]:focus {
+  outline: none;
+  border-color: var(--border);
+  background: var(--surface);
+}
+.rule-header input[type="number"] {
+  width: 50px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 3px 6px;
+  text-align: center;
+}
+.rule-header label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.section-label {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+  margin-top: 4px;
+}
+
+.condition-row, .action-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 4px;
+}
+.condition-row select, .action-row select {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 4px 6px;
+}
+.condition-row input[type="number"], .action-row input[type="number"] {
+  width: 70px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 4px 6px;
+}
+
+.add-btn {
+  background: none;
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 11px;
+  padding: 3px 10px;
+  cursor: pointer;
+  margin-top: 4px;
+}
+.add-btn:hover { border-color: var(--primary); color: var(--primary); }
+
+/* ── Summary Bar ── */
+.summary-bar {
+  display: flex;
+  gap: 20px;
+  padding: 12px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.summary-stat {
+  text-align: center;
+}
+.summary-stat .label {
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.summary-stat .value {
+  font-size: 18px;
+  font-weight: 700;
+}
+.pnl-positive { color: var(--success); }
+.pnl-negative { color: var(--danger); }
+.pnl-zero { color: var(--muted); }
+
+/* ── Results Table ── */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+th {
+  text-align: left;
+  padding: 6px 10px;
+  color: var(--muted);
+  font-weight: 500;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+tr:hover td { background: rgba(255, 255, 255, 0.02); }
+
+.result-win { color: var(--success); font-weight: 600; }
+.result-loss { color: var(--danger); font-weight: 600; }
+.result-void { color: var(--muted); }
+
+code {
+  background: var(--bg);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--accent);
+}
+
+.empty { color: var(--muted); padding: 40px; text-align: center; }
+.loading { color: var(--muted); padding: 40px; text-align: center; }
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.badge-source { background: var(--border); color: var(--text); }
+
+/* ── Scrollable panels ── */
+.scroll-panel {
+  max-height: calc(100vh - 220px);
+  overflow-y: auto;
+}
+.scroll-panel::-webkit-scrollbar { width: 6px; }
+.scroll-panel::-webkit-scrollbar-track { background: transparent; }
+.scroll-panel::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* ── Responsive ── */
+@media (max-width: 1024px) {
+  .main-grid { grid-template-columns: 1fr; }
+  .top-bar { flex-direction: column; }
+}

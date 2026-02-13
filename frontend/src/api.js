@@ -1,4 +1,4 @@
-const BASE = ''
+const BASE = import.meta.env.VITE_API_URL || ''
 
 export async function fetchDates() {
   const r = await fetch(`${BASE}/api/dates`)

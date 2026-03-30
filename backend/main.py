@@ -46,14 +46,11 @@ simulator = Simulator(reader)
 # ── FastAPI app ──
 app = FastAPI(title="CHIMERA Back-Test Workbench")
 
+_extra_origins = os.environ.get("ALLOWED_ORIGINS", "")
+_cors_origins = [FRONTEND_URL] + [o.strip() for o in _extra_origins.split(",") if o.strip()] + ["http://localhost:5173", "http://localhost:3000"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        FRONTEND_URL,
-        "https://layback.thync.online",
-        "http://localhost:5173",
-        "http://localhost:3000",
-    ],
+    allow_origins=_cors_origins,
     allow_origin_regex=r"https://.*\.pages\.dev",
     allow_credentials=True,
     allow_methods=["*"],

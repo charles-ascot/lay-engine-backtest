@@ -1,233 +1,360 @@
 """
-CHIMERA Back-Test Workbench — FastAPI App
-==========================================
-REST API for the back-testing workbench.
+CHIMERA Live Data Recorder — FastAPI Server
+=============================================
+Exposes REST endpoints for:
+  • Configuration management (Betfair, GCS, recorder settings)
+  • Session validation and GCS connection testing
+  • Recorder lifecycle (start / stop / manual poll)
+  • Dashboard state (engine status, stats, market list)
+  • Data feed for the Lay Bet App (drop-in Betfair replacement)
+  • Health / keepalive for Cloud Run and Cloud Scheduler
 """
 
 import os
-import json
 import logging
-from pathlib import Path
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
-from dotenv import load_dotenv
 
-from gcs_reader import DataReader
-from data_loader import join_books_and_catalogue, is_main_race_market
-from strategy_schema import Strategy
-from simulator import Simulator, SimulationRequest
-from default_strategies import CHIMERA_DEFAULT
+from config import AppConfig
+from recorder import RecorderEngine
 
-load_dotenv()
-
-logging.basicConfig(level=logging.INFO, format="%(name)s | %(message)s")
+# ── Logging ──
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(name)-12s  %(levelname)-7s  %(message)s",
+    datefmt="%H:%M:%S",
+)
 logger = logging.getLogger("main")
 
-# ── Configuration ──
-GCS_BUCKET_NAME = os.environ.get("GCS_BUCKET_NAME", "")
-LOCAL_DATA_DIR = os.environ.get("LOCAL_DATA_DIR", "../back-data")
-STRATEGIES_DIR = Path(os.environ.get("STRATEGIES_DIR", "./strategies"))
-FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173")
+# ── Globals ──
+config: AppConfig = None
+engine: RecorderEngine = None
 
-# Ensure strategies directory exists
-STRATEGIES_DIR.mkdir(parents=True, exist_ok=True)
 
-# ── Data Reader ──
-reader = DataReader(
-    bucket_name=GCS_BUCKET_NAME if GCS_BUCKET_NAME else None,
-    local_dir=LOCAL_DATA_DIR if not GCS_BUCKET_NAME else None,
+# ── Lifespan ──
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global config, engine
+    config = AppConfig.load()
+    engine = RecorderEngine(config)
+    logger.info("CHIMERA Live Recorder initialised")
+    yield
+    if engine and engine.running:
+        engine.stop()
+    logger.info("CHIMERA Live Recorder shutdown")
+
+
+# ── App ──
+app = FastAPI(
+    title="CHIMERA Live Data Recorder",
+    version="1.0.0",
+    lifespan=lifespan,
 )
 
-simulator = Simulator(reader)
-
-# ── FastAPI app ──
-app = FastAPI(title="CHIMERA Back-Test Workbench")
-
-_extra_origins = os.environ.get("ALLOWED_ORIGINS", "")
-_cors_origins = [FRONTEND_URL] + [o.strip() for o in _extra_origins.split(",") if o.strip()] + ["http://localhost:5173", "http://localhost:3000"]
+# ── CORS ──
+frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
+cors_origins = [
+    frontend_url,
+    "http://localhost:5173",
+    "http://localhost:3000",
+]
+# Support comma-separated FRONTEND_URL for multiple origins
+if "," in frontend_url:
+    cors_origins = [u.strip() for u in frontend_url.split(",")] + [
+        "http://localhost:5173",
+        "http://localhost:3000",
+    ]
+# Deduplicate
+cors_origins = list(dict.fromkeys(cors_origins))
+logger.info(f"CORS allowed origins: {cors_origins}")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_cors_origins,
-    allow_origin_regex=r"https://.*\.pages\.dev",
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-# ── Request/Response Models ──
+# ═══════════════════════════════════════════
+#  REQUEST / RESPONSE MODELS
+# ═══════════════════════════════════════════
 
-class SimulateBody(BaseModel):
-    date: str
-    strategy: Strategy
-    market_ids: Optional[list[str]] = None
+class ConfigUpdate(BaseModel):
+    betfair_app_key: Optional[str] = None
+    betfair_ssoid: Optional[str] = None
+    gcs_project_id: Optional[str] = None
+    gcs_bucket_name: Optional[str] = None
+    gcs_base_path: Optional[str] = None
+    poll_interval_seconds: Optional[int] = None
+    countries: Optional[list[str]] = None
+    market_types: Optional[list[str]] = None
+    price_projection: Optional[list[str]] = None
+    catalogue_projections: Optional[list[str]] = None
 
 
-class SaveStrategyBody(BaseModel):
-    strategy: Strategy
+class SessionValidation(BaseModel):
+    ssoid: str
+    app_key: Optional[str] = None
 
 
-# ── Endpoints ──
+class CountriesRequest(BaseModel):
+    countries: list[str]
+
+
+class FeedBooksRequest(BaseModel):
+    market_ids: list[str]
+
+
+# ═══════════════════════════════════════════
+#  HEALTH & KEEPALIVE
+# ═══════════════════════════════════════════
 
 @app.get("/api/health")
-def health():
+async def health():
     return {
         "status": "ok",
-        "source": "gcs" if GCS_BUCKET_NAME else "local",
-        "data_dir": LOCAL_DATA_DIR if not GCS_BUCKET_NAME else None,
-        "bucket": GCS_BUCKET_NAME if GCS_BUCKET_NAME else None,
+        "recorder": engine.status if engine else "uninitialised",
     }
 
 
-@app.get("/api/dates")
-def list_dates():
-    """List all available dates with recorded data."""
-    dates = reader.list_available_dates()
-    return {"dates": dates}
+@app.get("/api/diag")
+async def diagnostics():
+    """Diagnostic endpoint — shows CORS config, env state, credential presence."""
+    return {
+        "cors_origins": cors_origins,
+        "frontend_url_env": frontend_url,
+        "betfair_app_key_set": bool(config.betfair.app_key),
+        "betfair_ssoid_set": bool(config.betfair.ssoid),
+        "gcs_configured": bool(config.gcs.bucket_name and config.gcs.project_id),
+        "recorder_status": engine.status if engine else "uninitialised",
+    }
 
 
-@app.get("/api/markets/{date}")
-def list_markets(date: str):
-    """List all WIN markets for a given date, grouped by venue."""
-    snapshots = reader.list_snapshots_for_date(date)
-    if not snapshots:
-        return {"date": date, "venues": [], "total_markets": 0}
+@app.get("/api/keepalive")
+async def keepalive():
+    """Cloud Scheduler hits this to keep the instance warm."""
+    result = {"warmed": True, "status": engine.status if engine else "uninitialised"}
+    if engine and engine.running and engine.client:
+        ka = engine.client.keepalive()
+        result["session_alive"] = ka
+    return result
 
-    # Use the first snapshot to get market listing
-    sp = snapshots[0]
-    books = reader.read_ndjson(sp.books_path)
-    cats = reader.read_ndjson(sp.catalogue_path)
-    markets = join_books_and_catalogue(books, cats)
 
-    # Filter to main race WIN markets (exclude exotics like Forecast, Each Way, etc.)
-    win_markets = [
-        m for m in markets
-        if m.number_of_winners == 1 and is_main_race_market(m.market_name, m.event_name)
-    ]
+# ═══════════════════════════════════════════
+#  CONFIGURATION
+# ═══════════════════════════════════════════
 
-    # Group by venue
-    venues: dict[str, list] = {}
-    for m in win_markets:
-        venue = m.venue or "Unknown"
-        if venue not in venues:
-            venues[venue] = []
+@app.get("/api/config")
+async def get_config():
+    return config.to_safe_dict()
 
-        # Count active runners with lay prices
-        active_runners = [
-            r for r in m.runners
-            if r.status == "ACTIVE" and r.best_available_to_lay is not None
-        ]
 
-        venues[venue].append({
-            "market_id": m.market_id,
-            "market_name": m.market_name,
-            "market_start_time": m.market_start_time,
-            "venue": venue,
-            "event_name": m.event_name,
-            "runner_count": len(active_runners),
-            "total_matched": m.total_matched,
-            "runners": [
-                {
-                    "selection_id": r.selection_id,
-                    "runner_name": r.runner_name,
-                    "best_lay_odds": r.best_available_to_lay,
-                    "best_back_odds": r.best_available_to_back,
-                    "status": r.status,
-                }
-                for r in m.runners
-                if r.status == "ACTIVE"
-            ],
-        })
+@app.post("/api/config")
+async def update_config(update: ConfigUpdate):
+    changes = update.model_dump(exclude_none=True)
+    if not changes:
+        raise HTTPException(400, "No fields provided")
 
-    # Sort venues and markets within each venue
-    sorted_venues = []
-    for venue_name in sorted(venues.keys()):
-        venue_markets = sorted(venues[venue_name], key=lambda m: m["market_start_time"])
-        sorted_venues.append({
-            "venue": venue_name,
-            "markets": venue_markets,
-        })
+    # Map flat fields back to nested config
+    if "betfair_app_key" in changes:
+        config.betfair.app_key = changes["betfair_app_key"]
+    if "betfair_ssoid" in changes:
+        config.betfair.ssoid = changes["betfair_ssoid"]
+    if "gcs_project_id" in changes:
+        config.gcs.project_id = changes["gcs_project_id"]
+    if "gcs_bucket_name" in changes:
+        config.gcs.bucket_name = changes["gcs_bucket_name"]
+    if "gcs_base_path" in changes:
+        config.gcs.base_path = changes["gcs_base_path"]
+    if "poll_interval_seconds" in changes:
+        config.recorder.poll_interval_seconds = changes["poll_interval_seconds"]
+    if "countries" in changes:
+        config.recorder.countries = changes["countries"]
+    if "market_types" in changes:
+        config.recorder.market_types = changes["market_types"]
+    if "price_projection" in changes:
+        config.recorder.price_projection = changes["price_projection"]
+    if "catalogue_projections" in changes:
+        config.recorder.catalogue_projections = changes["catalogue_projections"]
+
+    engine.update_config(config)
+    return {"success": True, "config": config.to_safe_dict()}
+
+
+@app.post("/api/countries")
+async def set_countries(req: CountriesRequest):
+    """Update the market countries filter (quick toggle from dashboard)."""
+    valid = {"GB", "IE", "ZA", "FR"}
+    filtered = [c for c in req.countries if c in valid]
+    if not filtered:
+        raise HTTPException(400, "At least one valid country required")
+    config.recorder.countries = filtered
+    engine.update_config(config)
+    return {"countries": config.recorder.countries}
+
+
+# ═══════════════════════════════════════════
+#  SESSION & CONNECTION TESTING
+# ═══════════════════════════════════════════
+
+@app.post("/api/validate-session")
+async def validate_session(body: SessionValidation):
+    """Test a Betfair SSOID before saving it."""
+    from betfair_client import BetfairClient
+
+    app_key = body.app_key or config.betfair.app_key
+    if not app_key:
+        return {
+            "valid": False,
+            "message": "No app key provided and none saved in config. Enter your Betfair Application Key.",
+            "field": "app_key",
+        }
+    if not body.ssoid:
+        return {
+            "valid": False,
+            "message": "No SSOID provided. Paste your Betfair session token.",
+            "field": "ssoid",
+        }
+
+    test_client = BetfairClient(app_key=app_key, ssoid=body.ssoid)
+    result = test_client.validate_session()
+    return result
+
+
+@app.post("/api/test-gcs")
+async def test_gcs():
+    """Test the GCS connection with current config."""
+    result = engine.writer.test_connection()
+    return result
+
+
+# ═══════════════════════════════════════════
+#  RECORDER LIFECYCLE
+# ═══════════════════════════════════════════
+
+@app.post("/api/recorder/start")
+async def start_recorder():
+    result = engine.start()
+    if not result["success"]:
+        raise HTTPException(400, result["message"])
+    return result
+
+
+@app.post("/api/recorder/stop")
+async def stop_recorder():
+    return engine.stop()
+
+
+@app.post("/api/recorder/poll")
+async def manual_poll():
+    """Execute a single poll cycle (for testing)."""
+    result = engine.run_single_poll()
+    if not result["success"]:
+        raise HTTPException(400, result["message"])
+    return result
+
+
+# ═══════════════════════════════════════════
+#  DASHBOARD STATE
+# ═══════════════════════════════════════════
+
+@app.get("/api/state")
+async def get_state():
+    return engine.get_state()
+
+
+# ═══════════════════════════════════════════
+#  DATA FEED (for Lay Bet App)
+# ═══════════════════════════════════════════
+
+@app.get("/api/feed/markets")
+async def feed_markets():
+    """Return cached market catalogue — drop-in for Betfair listMarketCatalogue."""
+    return engine.get_feed_markets()
+
+
+@app.get("/api/feed/book/{market_id}")
+async def feed_book(market_id: str):
+    """Return cached market book — drop-in for Betfair listMarketBook."""
+    book = engine.get_feed_book(market_id)
+    if book is None:
+        raise HTTPException(404, f"No book data for market {market_id}")
+    return book
+
+
+@app.post("/api/feed/books")
+async def feed_books(body: FeedBooksRequest):
+    """Return cached books for multiple markets."""
+    return engine.get_feed_books(body.market_ids)
+
+
+# ═══════════════════════════════════════════
+#  DEBUG (temporary — remove once working)
+# ═══════════════════════════════════════════
+
+@app.get("/api/debug/catalogue")
+async def debug_catalogue():
+    """Make a raw listMarketCatalogue call and return the full response."""
+    import requests as req
+    from datetime import datetime, timezone
+    from betfair_client import BETTING_API_URL
+
+    if not engine.client.is_authenticated:
+        return {"error": "Not authenticated"}
+
+    now = datetime.now(timezone.utc)
+
+    # Match the exact format from the working Lay Engine reference
+    payload = {
+        "jsonrpc": "2.0",
+        "method": "SportsAPING/v1.0/listMarketCatalogue",
+        "params": {
+            "filter": {
+                "eventTypeIds": ["7"],
+                "marketCountries": config.recorder.countries,
+                "marketStartTime": {
+                    "from": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "to": now.replace(hour=23, minute=59, second=59).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                },
+            },
+            "maxResults": "200",
+            "marketProjection": ["EVENT", "MARKET_START_TIME", "RUNNER_DESCRIPTION"],
+            "sort": "FIRST_TO_START",
+        },
+        "id": 1,
+    }
+
+    resp = req.post(
+        BETTING_API_URL,
+        json=[payload],
+        headers=engine.client._headers(),
+        timeout=30,
+    )
 
     return {
-        "date": date,
-        "venues": sorted_venues,
-        "total_markets": len(win_markets),
-        "snapshot_count": len(snapshots),
+        "status_code": resp.status_code,
+        "url": BETTING_API_URL,
+        "payload": payload,
+        "response_length": len(resp.text),
+        "response_preview": resp.text[:2000],
     }
 
 
-@app.post("/api/simulate")
-def simulate(body: SimulateBody):
-    """Run a back-test simulation."""
-    request = SimulationRequest(
-        date=body.date,
-        strategy=body.strategy,
-        market_ids=body.market_ids,
-    )
-    result = simulator.run(request)
-    return result.to_dict()
-
-
-@app.get("/api/strategies/default")
-def get_default_strategy():
-    """Return the CHIMERA default strategy as JSON."""
-    return CHIMERA_DEFAULT
-
-
-@app.get("/api/strategies")
-def list_strategies():
-    """List all saved strategies."""
-    strategies = []
-
-    # Always include the default
-    strategies.append({
-        "id": CHIMERA_DEFAULT["id"],
-        "name": CHIMERA_DEFAULT["name"],
-        "description": CHIMERA_DEFAULT["description"],
-        "is_default": True,
-    })
-
-    # Load saved strategies
-    for f in STRATEGIES_DIR.glob("*.json"):
-        try:
-            data = json.loads(f.read_text())
-            strategies.append({
-                "id": data.get("id", f.stem),
-                "name": data.get("name", f.stem),
-                "description": data.get("description", ""),
-                "is_default": False,
-            })
-        except Exception:
-            pass
-
-    return {"strategies": strategies}
-
-
-@app.get("/api/strategies/{strategy_id}")
-def get_strategy(strategy_id: str):
-    """Get a specific strategy by ID."""
-    if strategy_id == "chimera_default":
-        return CHIMERA_DEFAULT
-
-    path = STRATEGIES_DIR / f"{strategy_id}.json"
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="Strategy not found")
-
-    return json.loads(path.read_text())
-
-
-@app.post("/api/strategies")
-def save_strategy(body: SaveStrategyBody):
-    """Save a strategy to disk."""
-    strategy = body.strategy
-    path = STRATEGIES_DIR / f"{strategy.id}.json"
-    path.write_text(json.dumps(strategy.model_dump(), indent=2))
-    return {"status": "saved", "id": strategy.id}
-
+# ═══════════════════════════════════════════
+#  RUN
+# ═══════════════════════════════════════════
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=int(os.getenv("PORT", 8080)),
+        reload=True,
+    )
